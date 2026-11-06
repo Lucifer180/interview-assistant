@@ -45,7 +45,8 @@ function App() {
     connected,
     listening,
     starting,
-    finalTranscript,
+    segments,
+    currentTranscript,
     interimTranscript,
     question,
     answer,
@@ -61,7 +62,10 @@ function App() {
   useEffect(() => {
     const el = transcriptRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [finalTranscript, interimTranscript]);
+  }, [segments, currentTranscript, interimTranscript]);
+
+  const hasTranscript =
+    segments.length > 0 || Boolean(currentTranscript || interimTranscript);
 
   useEffect(() => {
     const el = answerRef.current;
@@ -165,7 +169,7 @@ function App() {
               <button
                 type="button"
                 onClick={session.clearTranscript}
-                disabled={!finalTranscript && !interimTranscript}
+                disabled={!hasTranscript}
                 className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300 disabled:opacity-30"
               >
                 <Eraser className="h-3 w-3" /> Clear
@@ -175,21 +179,53 @@ function App() {
               ref={transcriptRef}
               className="max-h-[40vh] flex-1 overflow-y-auto px-5 py-4 text-sm leading-relaxed lg:max-h-none"
             >
-              {finalTranscript || interimTranscript ? (
-                <p>
-                  <span className="text-zinc-200">{finalTranscript}</span>
-                  {interimTranscript && (
-                    <span className="text-zinc-500 italic">
-                      {finalTranscript ? " " : ""}
-                      {interimTranscript}
-                    </span>
+              {hasTranscript ? (
+                <ul className="space-y-3">
+                  {segments.map((segment) => (
+                    <li key={segment.id} className="flex gap-3">
+                      <span
+                        className={`mt-[0.45rem] h-2 w-2 shrink-0 rounded-full ${
+                          segment.kind === "question"
+                            ? "bg-amber-400"
+                            : "bg-zinc-700"
+                        }`}
+                        aria-hidden
+                      />
+                      <span
+                        className={
+                          segment.kind === "question"
+                            ? "font-medium text-zinc-100"
+                            : "text-zinc-500"
+                        }
+                      >
+                        {segment.text}
+                      </span>
+                    </li>
+                  ))}
+
+                  {(currentTranscript || interimTranscript) && (
+                    <li className="flex gap-3">
+                      <span
+                        className="mt-[0.45rem] h-2 w-2 shrink-0 animate-pulse rounded-full bg-emerald-400"
+                        aria-hidden
+                      />
+                      <span>
+                        <span className="text-zinc-200">{currentTranscript}</span>
+                        {interimTranscript && (
+                          <span className="text-zinc-500 italic">
+                            {currentTranscript ? " " : ""}
+                            {interimTranscript}
+                          </span>
+                        )}
+                      </span>
+                    </li>
                   )}
-                </p>
+                </ul>
               ) : (
                 <p className="text-zinc-600">
                   {listening
                     ? "Listening… start speaking."
-                    : "The interviewer's words will appear here. Grey italic text is interim (still changing); white text is final."}
+                    : "Each thing the interviewer says becomes a bullet. Amber = detected question, grey = ignored small talk, green = being spoken now (grey italic words are still changing)."}
                 </p>
               )}
             </div>

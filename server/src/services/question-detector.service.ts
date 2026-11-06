@@ -87,18 +87,22 @@ export class QuestionDetector {
         return null;
     }
 
-    processUtteranceEnd(): string | null {
+    /**
+     * Flushes the buffered utterance. Returns null if nothing was buffered,
+     * otherwise the text and whether it should be answered.
+     */
+    processUtteranceEnd(): { text: string; isQuestion: boolean } | null {
         const candidate = this.questionBuffer.trim();
         this.questionBuffer = "";
 
         if (!candidate) return null;
 
-        if (!isQuestionLike(candidate)) {
+        const isQuestion = isQuestionLike(candidate);
+        if (!isQuestion) {
             console.log("Ignored non-question:", candidate);
-            return null;
         }
 
-        return candidate;
+        return { text: candidate, isQuestion };
     }
 
     reset() {

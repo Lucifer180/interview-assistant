@@ -12,7 +12,7 @@ Mic audio → WebSocket → Deepgram (streaming STT) → question detection → 
 
 ## Features
 
-- **Live transcript.** Final text is shown in white and interim (still changing) text in grey italics.
+- **Live transcript as a bullet list**, one bullet per utterance. Detected questions are amber, ignored small talk is grey, and the utterance in progress is green, with its interim (still changing) words in grey italics.
 - **Automatic question detection** that uses Deepgram's end-of-speech signals plus heuristics to ignore filler and small talk.
 - **Answers stream token by token** from Groq over the same WebSocket.
 - **Candidate context.** Paste or upload (PDF/DOCX) a resume and a job description. Answers are grounded in them, and the prompt forbids inventing experience.
@@ -134,6 +134,7 @@ flowchart LR
 | server → client | `CONNECTED`, `STATUS` | Lifecycle (`LISTENING`, `STOPPED`) |
 | server → client | `TRANSCRIPT` | `{ transcript, isFinal, speechfinal }` |
 | server → client | `QUESTION_DETECTED` | Completed question |
+| server → client | `UTTERANCE_IGNORED` | Utterance judged not a question (closes its transcript bullet) |
 | server → client | `AI_ANSWER_START` / `_CHUNK` / `_COMPLETE` / `_ERROR` | Streamed answer |
 | server → client | `CONTEXT_SAVED`, `ERROR` | Acks and errors |
 

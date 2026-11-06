@@ -21,6 +21,14 @@ export interface LatencyMetrics {
   totalMs: number | null;
 }
 
+/** One finished utterance in the transcript (one bullet in the UI). */
+export interface TranscriptSegment {
+  id: number;
+  text: string;
+  /** "question" = detected + answered; "other" = filler / statement. */
+  kind: "question" | "other";
+}
+
 export function useInterviewSession() {
   const socketRef = useRef<WebSocket | null>(null);
   const audioRef = useRef<AudioService | null>(null);
@@ -32,8 +40,31 @@ export function useInterviewSession() {
   const [listening, setListening] = useState(false);
   const [starting, setStarting] = useState(false);
 
-  const [finalTranscript, setFinalTranscript] = useState("");
+  // Finished utterances, the final text of the one in progress, and its
+  // interim (still-changing) words.
+  const [segments, setSegments] = useState<TranscriptSegment[]>([]);
+  const [currentTranscript, setCurrentTranscript] = useState("");
   const [interimTranscript, setInterimTranscript] = useState("");
+  const segmentIdRef = useRef(0);
+  // Mirror of currentTranscript, readable inside socket handlers.
+  const currentRef = useRef("");
+
+  const setCurrent = useCallback((text: string) => {
+    currentRef.current = text;
+    setCurrentTranscript(text);
+  }, []);
+
+  const closeSegment = useCallback(
+    (text: string, kind: TranscriptSegment["kind"]) => {
+      const trimmed = text.trim();
+      if (trimmed) {
+        const id = ++segmentIdRef.current;
+        setSegments((prev) => [...prev, { id, text: trimmed, kind }]);
+      }
+      setCurrent("");
+    },
+    [setCurrent]
+  );
 
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState("");
@@ -104,6 +135,8 @@ export function useInterviewSession() {
             setListening(false);
             setStarting(false);
             setInterimTranscript("");
+            // Keep anything said before Stop as its own bullet.
+            closeSegment(currentRef.current, "other");
           }
           break;
         }
@@ -111,7 +144,10 @@ export function useInterviewSession() {
         case "TRANSCRIPT": {
           const text = String(message.transcript ?? "");
           if (message.isFinal) {
-            setFinalTranscript((prev) => (prev ? `${prev} ${text}` : text));
+            if (text.trim()) {
+              const prev = currentRef.current;
+              setCurrent(prev ? `${prev} ${text}` : text);
+            }
             setInterimTranscript("");
           } else {
             setInterimTranscript(text);
@@ -119,10 +155,19 @@ export function useInterviewSession() {
           break;
         }
 
+        case "UTTERANCE_IGNORED": {
+          closeSegment(String(message.text ?? ""), "other");
+          break;
+        }
+
         case "QUESTION_DETECTED": {
           questionAtRef.current = performance.now();
           gotFirstTokenRef.current = false;
-          setQuestion(String(message.question ?? ""));
+          const detected = String(message.question ?? "");
+          // The server's question text is exactly the buffered finals,
+          // so it replaces the in-progress text as a finished bullet.
+          closeSegment(detected, "question");
+          setQuestion(detected);
           setQuestionCount((n) => n + 1);
           setMetrics({ firstTokenMs: null, totalMs: null });
           break;
@@ -193,7 +238,7 @@ export function useInterviewSession() {
       socket.close();
       void stopAudio();
     };
-  }, [stopAudio]);
+  }, [stopAudio, closeSegment, setCurrent]);
 
   const start = useCallback(() => {
     const socket = socketRef.current;
@@ -238,9 +283,10 @@ export function useInterviewSession() {
   );
 
   const clearTranscript = useCallback(() => {
-    setFinalTranscript("");
+    setSegments([]);
+    setCurrent("");
     setInterimTranscript("");
-  }, []);
+  }, [setCurrent]);
 
   let phase: Phase = "idle";
   if (!connected) phase = "offline";
@@ -254,7 +300,8 @@ export function useInterviewSession() {
     connected,
     listening,
     starting,
-    finalTranscript,
+    segments,
+    currentTranscript,
     interimTranscript,
     question,
     answer,

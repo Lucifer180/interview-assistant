@@ -148,8 +148,18 @@ export function initializeWebSocket(server: Server) {
                                 },
                                 onUtteranceEnd: () => {
                                     // ~1 s of silence: flush whatever was said, if it's a question
-                                    const question = questionDetector.processUtteranceEnd();
-                                    if (question) answerQuestion(question);
+                                    const utterance = questionDetector.processUtteranceEnd();
+                                    if (!utterance) return;
+
+                                    if (utterance.isQuestion) {
+                                        answerQuestion(utterance.text);
+                                    } else {
+                                        // Lets the UI close this transcript bullet as "not a question".
+                                        sendMessage(socket, {
+                                            type: "UTTERANCE_IGNORED",
+                                            text: utterance.text,
+                                        });
+                                    }
                                 },
                                 onError: (error) => {
                                     console.error("Deepgram Error:", error);
