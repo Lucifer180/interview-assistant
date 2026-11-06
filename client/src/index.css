@@ -1,10 +1,24 @@
 @import "tailwindcss";
 
+:root {
+  color-scheme: dark;
+}
+
 * {
   box-sizing: border-box;
 }
 
 body {
   margin: 0;
-  font-family: Arial, sans-serif;
+  background: #09090b;
+  font-family:
+    "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Subtle scrollbars for the transcript / answer panels */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3f3f46 transparent;
 }

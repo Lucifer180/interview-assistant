@@ -1,332 +1,264 @@
+import { useEffect, useRef } from "react";
+import { Eraser, Mic, Square, Timer, X } from "lucide-react";
+import { useInterviewSession, type LatencyMetrics } from "./hooks/useInterviewSession";
+import { StatusOrb, PHASE_STYLES } from "./components/StatusOrb";
+import { ContextPanel } from "./components/ContextPanel";
+import { AnswerText } from "./components/AnswerText";
 
-import { useEffect, useRef, useState } from "react";
-import { createWebSocket } from "./services/websocket.service";
-import { AudioService } from "./services/audio.services";
-import { uploadDocument } from "./services/upload.service";
+function formatMs(ms: number | null) {
+  if (ms === null) return "—";
+  return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(2)} s`;
+}
+
+function LatencyBadge({ metrics }: { metrics: LatencyMetrics }) {
+  const ttft = metrics.firstTokenMs;
+  const tone =
+    ttft === null
+      ? "text-zinc-500"
+      : ttft < 1500
+        ? "text-emerald-400"
+        : ttft < 3000
+          ? "text-amber-400"
+          : "text-rose-400";
+
+  return (
+    <div
+      className="flex items-center gap-3 text-xs text-zinc-500"
+      title="Measured in the browser from QUESTION_DETECTED (end of speech) to the first / last answer token"
+    >
+      <Timer className="h-3.5 w-3.5" />
+      <span>
+        First token <span className={`font-mono ${tone}`}>{formatMs(ttft)}</span>
+      </span>
+      <span className="text-zinc-700">·</span>
+      <span>
+        Total <span className="font-mono text-zinc-300">{formatMs(metrics.totalMs)}</span>
+      </span>
+    </div>
+  );
+}
+
 function App() {
-  const socketRef = useRef<WebSocket | null>(null);
-  const audioRef = useRef<AudioService | null>(null);
-  const [finalTranscript, setFinalTranscript] = useState("");
-  const [interimTranscript, setInterimTranscript] = useState("");
-  const [status, setStatus] = useState("DISCONNECTED");
-  const [transcript, setTranscript] = useState("");
-  const [answer, setAnswer] = useState("");
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [detectedQuestion, setDetectedQuestion] = useState("");
-  const [resumeText, setResumeText] = useState("");
-  const [jobDescription, setJobDescription] = useState("");
-  const [contextSaved, setContextSaved] = useState(false);
+  const session = useInterviewSession();
+  const {
+    phase,
+    connected,
+    listening,
+    starting,
+    finalTranscript,
+    interimTranscript,
+    question,
+    answer,
+    isGenerating,
+    questionCount,
+    metrics,
+  } = session;
+
+  const transcriptRef = useRef<HTMLDivElement>(null);
+  const answerRef = useRef<HTMLDivElement>(null);
+
+  // Keep the newest transcript / answer text in view.
+  useEffect(() => {
+    const el = transcriptRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [finalTranscript, interimTranscript]);
 
   useEffect(() => {
-    const socket = createWebSocket();
-    socketRef.current = socket;
+    const el = answerRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [answer]);
 
-    socket.onopen = () => {
-      console.log("WebSocket connected");
-    };
+  const status = PHASE_STYLES[phase];
+  const active = listening || starting;
 
-    socket.onmessage = (event) => {
-      const message = JSON.parse(event.data);
-
-      if (message.type === "CONNECTED") {
-        setStatus("CONNECTED");
-      }
-
-      if (message.type === "STATUS") {
-        setStatus(message.status);
-      }
-      if (message.type === "QUESTION_DETECTED") {
-        console.log("Completed question:", message.question);
-      }
-      if (message.type === "QUESTION_DETECTED") {
-        setDetectedQuestion(message.question);
-      }
-
-      if (message.type === "AI_ANSWER_START") {
-        setAnswer("");
-        setIsGenerating(true);
-      }
-
-      if (message.type === "AI_ANSWER_CHUNK") {
-        setAnswer((previous) => previous + message.token);
-      }
-
-      if (message.type === "AI_ANSWER_COMPLETE") {
-        setIsGenerating(false);
-      }
-
-      if (message.type === "AI_ANSWER_ERROR") {
-        setIsGenerating(false);
-        console.error(message.message);
-      }
-      if (message.type === "CONTEXT_SAVED") {
-        setContextSaved(true);
-        console.log(message.message);
-      }
-
-      if (message.type === "TRANSCRIPT") {
-        if (message.isFinal) {
-          setFinalTranscript((prev) =>
-            prev + " " + message.transcript
-          );
-
-          setInterimTranscript("");
-        } else {
-          setInterimTranscript(message.transcript);
-        }
-      }
-
-      if (message.type === "ERROR") {
-        console.error(message.message);
-      }
-    };
-
-    socket.onclose = () => {
-      setStatus("DISCONNECTED");
-    };
-
-    return () => {
-      socket.close();
-    };
-  }, []);
-
-  const saveContext = () => {
-    const socket = socketRef.current;
-
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      console.error("WebSocket is not connected");
-      return;
-    }
-
-    socket.send(
-      JSON.stringify({
-        type: "SET_CONTEXT",
-        resumeText,
-        jobDescription,
-      })
-    );
-  };
-
-  const startListening = async () => {
-    const socket = socketRef.current;
-
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      console.error("WebSocket is not connected");
-      return;
-    }
-
-    socket.send(JSON.stringify({ type: "START" }));
-
-    socket.addEventListener(
-      "message",
-      async function waitForListening(event) {
-        const message = JSON.parse(event.data);
-
-        if (
-          message.type === "STATUS" &&
-          message.status === "LISTENING"
-        ) {
-          socket.removeEventListener("message", waitForListening);
-
-          const audio = new AudioService();
-          audioRef.current = audio;
-
-          await audio.start((audioData) => {
-            if (socket.readyState === WebSocket.OPEN) {
-              socket.send(audioData);
-            }
-          });
-        }
-      }
-    );
-  };
-
-  const stopListening = async () => {
-    await audioRef.current?.stop();
-    audioRef.current = null;
-
-    socketRef.current?.send(
-      JSON.stringify({ type: "STOP" })
-    );
-  };
-
-  const handleResumeUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-
-    if (!file) return;
-
-    try {
-      const result = await uploadDocument(file);
-
-      setResumeText(result.text);
-      setContextSaved(false);
-      console.log("resume extracted succesfully");
-    } catch (error) {
-      console.error("resume upload faied", error);
-    }
-  }
-
-  const handleJobDescriptionUpload = async (
-    event: React.ChangeEvent<HTMLInputElement>
-  ) => {
-    const file = event.target.files?.[0];
-
-    if (!file) return;
-
-    try {
-      const result = await uploadDocument(file);
-
-      setJobDescription(result.text);
-      setContextSaved(false);
-    } catch (error) {
-      console.error("Job description upload failed:", error);
-    }
-  };
   return (
-    <div className="min-h-screen bg-slate-950 text-white flex flex-col items-center justify-center gap-6 p-6">
-      <h1 className="text-3xl font-bold">
-        Real-Time Interview Assistant
-      </h1>
-
-      <p>Connection: {status}</p>
-      <form
-        action="http://localhost:5000/api/upload"
-        method="POST"
-        encType="multipart/form-data"
-      >
-        <label className="block mb-2">
-          Upload Resume (PDF/DOCX)
-        </label>
-
-        <input
-          type="file"
-          name="resume"
-          accept=".pdf,.docx"
-          required
-          className="block w-full text-sm text-white"
-        />
-
-        <label className="block mb-2 mt-4">
-          Upload Job Description (PDF/DOCX)
-        </label>
-
-        <input
-          type="file"
-          name="jobDescription"
-          accept=".pdf,.docx"
-          required
-          className="block w-full text-sm text-white"
-        />
-
-        <button
-          type="submit"
-          className="mt-4 px-4 py-2 bg-blue-600 text-white rounded"
-        >
-          Submit
-        </button>
-      </form>
-      <div className="w-full max-w-2xl rounded-xl bg-slate-800 p-6">
-        <h2 className="text-xl font-semibold mb-4">
-          Candidate Context
-        </h2>
-
-        <label className="block mb-2">
-          Resume
-        </label>
-
-        <textarea
-          value={resumeText}
-          onChange={(e) => {
-            setResumeText(e.target.value);
-            setContextSaved(false);
-          }}
-          placeholder="Paste your resume text here..."
-          className="w-full h-40 bg-slate-900 border border-slate-700 rounded-lg p-3 text-white"
-        />
-
-        <label className="block mt-4 mb-2">
-          Job Description
-        </label>
-
-        <textarea
-          value={jobDescription}
-          onChange={(e) => {
-            setJobDescription(e.target.value);
-            setContextSaved(false);
-          }}
-          placeholder="Paste the job description here..."
-          className="w-full h-40 bg-slate-900 border border-slate-700 rounded-lg p-3 text-white"
-        />
-
-        <button
-          onClick={saveContext}
-          className="mt-4 bg-blue-600 px-5 py-2 rounded-lg"
-        >
-          Save Context
-        </button>
-
-        {contextSaved && (
-          <p className="text-green-400 mt-3">
-            Resume and job description saved!
-          </p>
-        )}
-      </div>
-
-      <div className="flex gap-4">
-        <button
-          onClick={startListening}
-          className="bg-green-600 px-6 py-3 rounded-lg"
-        >
-          Start
-        </button>
-
-        <button
-          onClick={stopListening}
-          className="bg-red-600 px-6 py-3 rounded-lg"
-        >
-          Stop
-        </button>
-      </div>
-
-      <div className="w-full max-w-2xl rounded-xl bg-slate-800 p-6">
-        <h2 className="text-xl font-semibold mb-3">
-          Live Transcript
-        </h2>
-
-        <p className="text-slate-300 whitespace-pre-wrap">
-          <div>
-            <p>{finalTranscript || "Your transcript will appear here..."}</p>
-
-            {/* <p className="text-slate-400">
-              {interimTranscript || "Your transcript will appear here..."}
-            </p> */}
+    <div className="min-h-screen bg-zinc-950 text-zinc-100">
+      {/* Header: status at a glance + primary control */}
+      <header className="sticky top-0 z-10 border-b border-zinc-800/80 bg-zinc-950/85 backdrop-blur">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-6 gap-y-3 px-4 py-3 sm:px-6">
+          <div className="flex items-center gap-3">
+            <StatusOrb phase={phase} size={64} />
+            <div>
+              <div className="flex items-center gap-2">
+                <span
+                  className="h-2 w-2 rounded-full"
+                  style={{ backgroundColor: status.color }}
+                />
+                <span className="text-lg font-semibold tracking-tight">
+                  {status.label}
+                </span>
+              </div>
+              <p className="text-xs text-zinc-500">{status.hint}</p>
+            </div>
           </div>
-        </p>
-      </div>
-      <div className="w-full max-w-2xl rounded-xl bg-slate-800 p-6">
-        <h2 className="text-xl font-semibold mb-3">
-          Detected Question
-        </h2>
 
-        <p className="text-slate-300">
-          {detectedQuestion || "Waiting for a question..."}
-        </p>
+          <div className="hidden h-10 w-px bg-zinc-800 md:block" />
 
-        <h2 className="text-xl font-semibold mt-6 mb-3">
-          AI Suggested Answer
-        </h2>
+          <div className="min-w-0 flex-1">
+            <h1 className="truncate text-sm font-medium text-zinc-300">
+              Real-Time Interview Assistant
+            </h1>
+            <LatencyBadge metrics={metrics} />
+          </div>
 
-        <p className="text-slate-300 whitespace-pre-wrap">
-          {answer || "Your AI answer will appear here..."}
-        </p>
+          <button
+            type="button"
+            onClick={active ? session.stop : session.start}
+            disabled={!connected}
+            className={`inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+              active
+                ? "bg-rose-500/15 text-rose-300 ring-1 ring-rose-500/40 hover:bg-rose-500/25"
+                : "bg-emerald-500 text-emerald-950 hover:bg-emerald-400"
+            }`}
+          >
+            {active ? (
+              <>
+                <Square className="h-4 w-4 fill-current" /> Stop
+              </>
+            ) : (
+              <>
+                <Mic className="h-4 w-4" /> Start listening
+              </>
+            )}
+          </button>
+        </div>
+      </header>
 
-        {isGenerating && (
-          <p className="text-green-400 mt-3">
-            Generating answer...
-          </p>
-        )}
-      </div>
+      {session.error && (
+        <div className="mx-auto mt-4 max-w-7xl px-4 sm:px-6">
+          <div className="flex items-start justify-between gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">
+            <span>{session.error}</span>
+            <button
+              type="button"
+              onClick={session.dismissError}
+              className="text-rose-300 hover:text-rose-100"
+              aria-label="Dismiss error"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      )}
 
+      <main className="mx-auto grid max-w-7xl gap-5 px-4 py-5 sm:px-6 lg:grid-cols-[minmax(0,380px)_minmax(0,1fr)]">
+        {/* Left column: context + live transcript */}
+        <div className="flex min-w-0 flex-col gap-5">
+          <ContextPanel
+            connected={connected}
+            saved={session.contextSaved}
+            onEdited={() => session.setContextSaved(false)}
+            onSave={session.saveContext}
+            onError={session.reportError}
+          />
+
+          <section className="flex min-h-[260px] flex-col rounded-2xl border border-zinc-800 bg-zinc-900/60 lg:flex-1">
+            <div className="flex items-center justify-between border-b border-zinc-800 px-5 py-3">
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-semibold">Live transcript</h2>
+                {listening && (
+                  <span className="relative flex h-2 w-2">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-400" />
+                  </span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={session.clearTranscript}
+                disabled={!finalTranscript && !interimTranscript}
+                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300 disabled:opacity-30"
+              >
+                <Eraser className="h-3 w-3" /> Clear
+              </button>
+            </div>
+            <div
+              ref={transcriptRef}
+              className="max-h-[40vh] flex-1 overflow-y-auto px-5 py-4 text-sm leading-relaxed lg:max-h-none"
+            >
+              {finalTranscript || interimTranscript ? (
+                <p>
+                  <span className="text-zinc-200">{finalTranscript}</span>
+                  {interimTranscript && (
+                    <span className="text-zinc-500 italic">
+                      {finalTranscript ? " " : ""}
+                      {interimTranscript}
+                    </span>
+                  )}
+                </p>
+              ) : (
+                <p className="text-zinc-600">
+                  {listening
+                    ? "Listening… start speaking."
+                    : "The interviewer's words will appear here. Grey italic text is interim (still changing); white text is final."}
+                </p>
+              )}
+            </div>
+          </section>
+        </div>
+
+        {/* Right column: question + answer, the part read during a call */}
+        <div className="flex min-w-0 flex-col gap-5">
+          <section className="rounded-2xl border border-zinc-800 bg-zinc-900/60 px-6 py-5">
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-xs font-semibold tracking-wider text-zinc-500 uppercase">
+                Detected question
+              </h2>
+              {questionCount > 0 && (
+                <span className="font-mono text-xs text-zinc-600">
+                  #{questionCount}
+                </span>
+              )}
+            </div>
+            <p
+              className={`text-xl leading-snug font-medium sm:text-2xl ${
+                question ? "text-zinc-50" : "text-zinc-600"
+              }`}
+            >
+              {question || "Waiting for the interviewer to ask a question…"}
+            </p>
+          </section>
+
+          <section className="flex min-h-[360px] flex-1 flex-col rounded-2xl border border-zinc-800 bg-zinc-900/60">
+            <div className="flex items-center justify-between border-b border-zinc-800 px-6 py-3">
+              <div className="flex items-center gap-2.5">
+                {isGenerating && <StatusOrb phase={phase} size={20} />}
+                <h2 className="text-sm font-semibold">Suggested answer</h2>
+              </div>
+              {isGenerating ? (
+                <span className="text-xs" style={{ color: status.color }}>
+                  {phase === "thinking" ? "Thinking…" : "Answering…"}
+                </span>
+              ) : (
+                answer && <span className="text-xs text-zinc-500">Done</span>
+              )}
+            </div>
+
+            <div ref={answerRef} className="flex-1 overflow-y-auto px-6 py-5">
+              {phase === "thinking" ? (
+                <div className="flex h-full min-h-[240px] flex-col items-center justify-center gap-4 text-zinc-500">
+                  <StatusOrb phase="thinking" size={64} />
+                  <p className="text-sm">Preparing an answer…</p>
+                </div>
+              ) : answer ? (
+                <>
+                  <AnswerText text={answer} />
+                  {isGenerating && (
+                    <span className="ml-0.5 inline-block h-4 w-1.5 animate-pulse rounded-sm bg-sky-400 align-middle" />
+                  )}
+                </>
+              ) : (
+                <div className="flex h-full min-h-[240px] flex-col items-center justify-center gap-4 text-center text-zinc-600">
+                  <StatusOrb phase={phase === "offline" ? "offline" : "idle"} size={64} />
+                  <p className="max-w-sm text-sm">
+                    When a question is detected, a short, speakable answer will
+                    stream in here.
+                  </p>
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
+      </main>
     </div>
   );
 }
