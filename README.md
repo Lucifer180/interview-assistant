@@ -13,7 +13,7 @@ Mic audio → WebSocket → Deepgram (streaming STT) → question detection → 
 ## Features
 
 - **Live transcript.** Final text is shown in white and interim (still changing) text in grey italics.
-- **Automatic question detection** based on Deepgram's end-of-speech signal.
+- **Automatic question detection** that uses Deepgram's end-of-speech signals plus heuristics to ignore filler and small talk.
 - **Answers stream token by token** from Groq over the same WebSocket.
 - **Candidate context.** Paste or upload (PDF/DOCX) a resume and a job description. Answers are grounded in them, and the prompt forbids inventing experience.
 - **Clear status indicator.** The header shows one of these states: `Ready → Connecting → Listening → Thinking → Answering`. Each state uses a different animated orb from [Thinking Orbs](https://libraries.dev/orbs).
@@ -179,15 +179,24 @@ client/src
 - Trade-off: the model catalogue changes (a Llama model I first tried had been
   retired), so the model name is configurable.
 
-**Question detection: end of speech + buffering**
-- Deepgram is configured with `endpointing: 300` ms. Final segments are
-  appended to a buffer, and when Deepgram flags `speech_final` (the speaker paused)
-  the buffer is emitted as one complete question.
-- This is simple, adds no extra latency, and handles questions that Deepgram
-  splits across several final segments.
-- Trade-off: a pause is not the same as a question. Mid-sentence hesitation can cut a
-  question early, and filler like "okay, great" is currently also sent to the LLM.
-  See *Known limitations* and *Next steps*.
+**Question detection: two end-of-speech signals + heuristics** (`server/src/services/question-detector.service.ts`)
+- Final transcript segments are buffered. Deepgram gives two end-of-speech signals:
+  `speech_final` (about a 300 ms pause, from `endpointing`) and `UtteranceEnd`
+  (about 1 s with no new words, from `utterance_end_ms`).
+- **Fast path:** if the buffer ends with `?` at `speech_final`, it is answered right
+  away, adding no extra latency.
+- **Otherwise it waits for `UtteranceEnd`**, because people pause mid-question. At
+  that point the buffer is answered only if it reads like a question: it contains `?`
+  or starts with a question or prompt word (*what, how, can, explain, tell me…*).
+  Filler (*okay, great, thank you, can you hear me*), fragments under 3 words and
+  plain statements are dropped and logged.
+- `UtteranceEnd` also covers the case where `speech_final` never fires because
+  background noise keeps the endpointer open.
+- **Why heuristics rather than an LLM classifier:** they add no latency and cost
+  nothing, and they cover the common interview patterns. The trade-off is that unusual
+  phrasings can be missed. A small LLM classifier is the next step.
+- Only one answer streams at a time. A newer question aborts the in-flight Groq
+  request (`AbortController`), so two answers never interleave.
 
 **Transport: one WebSocket for everything**
 - Audio goes up as binary frames and JSON events come down on the same socket, so
@@ -211,9 +220,9 @@ client/src
 
 | Stage | Approx. |
 |---|---|
-| End of speech → `speech_final` (Deepgram endpointing) | ~300–500 ms |
+| End of speech → detection (`speech_final` for "…?", else `UtteranceEnd`) | ~300 ms – 1.2 s |
 | Question → first Groq token (measured) | ~0.8 s |
-| **End of question → first answer token** | **~1.1–1.5 s** (target < 3 s) |
+| **End of question → first answer token** | **~1.1–2 s** (target < 3 s) |
 
 The UI shows time to first token and total time for every answer. It is measured
 in the browser from `QUESTION_DETECTED`, so it excludes the endpointing delay.
@@ -222,11 +231,12 @@ in the browser from `QUESTION_DETECTED`, so it excludes the endpointing delay.
 
 ## Known limitations
 
-- **Pauses are treated as questions.** There is no filler or small-talk filter yet,
-  and long pauses mid-question split it in two.
-- **Overlapping answers.** If a second question is detected while the first answer is
-  still streaming, both streams run and their tokens interleave. Earlier requests
-  should be cancelled with an `AbortController`.
+- **Question detection is heuristic.** A pause longer than about 1 s mid-question can
+  still split it in two. Questions phrased as statements without a question word
+  ("Your thoughts on microservices.") are ignored. If the candidate reads a
+  question aloud, it is answered too.
+- **A new question cancels the current answer.** This is deliberate, but a quick
+  follow-up asked while an answer is streaming replaces that answer.
 - **Answer length isn't strictly enforced.** The prompt asks for concise answers
   but doesn't hard-limit them to 60–90 words, and it sometimes includes code samples.
 - **Mic only.** No tab or system audio capture (`getDisplayMedia`), so the
@@ -243,11 +253,10 @@ in the browser from `QUESTION_DETECTED`, so it excludes the endpointing delay.
 
 ## What I'd build next with another week
 
-1. **Smarter question detection.** Run a fast LLM classifier (or a heuristic of
-   question words plus a trailing "?") on each `speech_final` segment to drop
-   filler, and wait for `UtteranceEnd` before treating a short fragment as complete.
-2. **Cancel stale answers.** Abort the in-flight Groq request when a new question
-   arrives, and show the previous Q&A in a history list.
+1. **Smarter question detection.** Add a fast LLM classifier as a second opinion on
+   borderline utterances, and merge a follow-up that arrives within a second or two.
+2. **Q&A history.** Show previous questions and answers in a list, and feed them
+   back as conversation memory.
 3. **Tab audio capture** with `getDisplayMedia` plus Deepgram diarization, so only the
    interviewer's speech is answered.
 4. **Answer modes per question type** (technical / behavioural with STAR / HR), with

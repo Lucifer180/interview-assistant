@@ -12,6 +12,9 @@ interface DeepgramCallbacks {
         speechfinal: boolean;
     }) => void;
 
+    /** Deepgram detected ~utterance_end_ms of silence after the last word. */
+    onUtteranceEnd: () => void;
+
     onError: (error: unknown) => void;
 }
 
@@ -34,13 +37,20 @@ export async function createDeepgramSession(callbacks: DeepgramCallbacks) {
     });
 
     connection.on("message", (data) => {
+        if (data.type === "UtteranceEnd") {
+            callbacks.onUtteranceEnd();
+            return;
+        }
+
         if (data.type !== "Results") {
             return;
         }
 
         const transcript = data.channel.alternatives[0]?.transcript ?? "";
 
-        if (!transcript.trim()) {
+        // Deepgram often sends speech_final on a result with an empty
+        // transcript; it still marks end of speech, so don't drop it.
+        if (!transcript.trim() && !data.speech_final) {
             return;
         }
 

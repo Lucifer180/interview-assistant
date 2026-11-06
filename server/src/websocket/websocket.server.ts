@@ -42,6 +42,54 @@ export function initializeWebSocket(server: Server) {
         let isStarting = false;
         let shouldStop = false;
 
+        // Only one answer streams at a time: a newer question cancels the
+        // previous answer so tokens from two answers never interleave.
+        let currentAnswer: AbortController | null = null;
+
+        const cancelCurrentAnswer = () => {
+            currentAnswer?.abort();
+            currentAnswer = null;
+        };
+
+        const answerQuestion = (question: string) => {
+            console.log("Detected question:", question);
+
+            cancelCurrentAnswer();
+            const controller = new AbortController();
+            currentAnswer = controller;
+
+            sendMessage(socket, { type: "QUESTION_DETECTED", question });
+            sendMessage(socket, { type: "AI_ANSWER_START" });
+
+            generateAnswer({
+                question,
+                resumeText: candidateContext.resumeText,
+                jobDescription: candidateContext.jobDescription,
+                signal: controller.signal,
+                onToken: (token) => {
+                    if (controller.signal.aborted) return;
+                    sendMessage(socket, { type: "AI_ANSWER_CHUNK", token });
+                },
+            })
+                .then(() => {
+                    if (controller.signal.aborted) return;
+                    sendMessage(socket, { type: "AI_ANSWER_COMPLETE" });
+                })
+                .catch((error) => {
+                    // Superseded by a newer question or STOP: not an error.
+                    if (controller.signal.aborted) return;
+
+                    console.error("Groq generation failed:", error);
+                    sendMessage(socket, {
+                        type: "AI_ANSWER_ERROR",
+                        message: "Unable to generate an answer",
+                    });
+                })
+                .finally(() => {
+                    if (currentAnswer === controller) currentAnswer = null;
+                });
+        };
+
         sendMessage(socket, {
             type: "CONNECTED",
             message: "websocket connection established"
@@ -94,48 +142,14 @@ export function initializeWebSocket(server: Server) {
                                         ...result,
                                     });
 
-                                    // Detect completed question
+                                    // Detect completed question (fast path: "...?" + pause)
                                     const question = questionDetector.processTranscript(result);
-
-                                    if (!question) return;
-
-                                    console.log("Detected question:", question);
-
-                                    sendMessage(socket, {
-                                        type: "QUESTION_DETECTED",
-                                        question,
-                                    });
-
-                                    // Notify frontend that answer generation started
-                                    sendMessage(socket, {
-                                        type: "AI_ANSWER_START",
-                                    });
-
-                                    // Generate and stream answer using Groq
-                                    void generateAnswer({
-                                        question,
-                                        resumeText: candidateContext.resumeText,
-                                        jobDescription: candidateContext.jobDescription,
-
-                                        onToken: (token) => {
-                                            sendMessage(socket, {
-                                                type: "AI_ANSWER_CHUNK",
-                                                token,
-                                            });
-                                        },
-                                    }).then(() => {
-                                        sendMessage(socket, {
-                                            type: "AI_ANSWER_COMPLETE",
-                                        });
-                                    })
-                                        .catch((error) => {
-                                            console.error("Groq generation failed:", error);
-
-                                            sendMessage(socket, {
-                                                type: "AI_ANSWER_ERROR",
-                                                message: "Unable to generate an answer",
-                                            });
-                                        });
+                                    if (question) answerQuestion(question);
+                                },
+                                onUtteranceEnd: () => {
+                                    // ~1 s of silence: flush whatever was said, if it's a question
+                                    const question = questionDetector.processUtteranceEnd();
+                                    if (question) answerQuestion(question);
                                 },
                                 onError: (error) => {
                                     console.error("Deepgram Error:", error);
@@ -216,6 +230,7 @@ export function initializeWebSocket(server: Server) {
                         deepgramSession?.close();
                         deepgramSession = null;
                         questionDetector.reset();
+                        cancelCurrentAnswer();
                         sendMessage(socket, {
                             type: "STATUS",
                             status: "STOPPED",
@@ -243,6 +258,7 @@ export function initializeWebSocket(server: Server) {
             console.log("client disconnected");
 
             shouldStop = true;
+            cancelCurrentAnswer();
             deepgramSession?.close();
             deepgramSession = null
         });

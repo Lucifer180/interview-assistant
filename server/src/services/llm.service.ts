@@ -5,10 +5,12 @@ interface GenerateAnswerOptions {
     resumeText?: string;
     jobDescription?: string;
     onToken: (token: string) => void;
+    /** Aborts the request/stream, e.g. when a newer question arrives. */
+    signal?: AbortSignal;
 }
 
 export async function generateAnswer({
-    question, resumeText = "", jobDescription = "", onToken
+    question, resumeText = "", jobDescription = "", onToken, signal
 }: GenerateAnswerOptions): Promise<void> {
     if (!env.GROQ_API_KEY) {
         throw new Error("GROQ_API_KEY is missing");
@@ -16,6 +18,7 @@ export async function generateAnswer({
 
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
+        signal,
         headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${env.GROQ_API_KEY}`,
